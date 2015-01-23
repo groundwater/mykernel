@@ -13,41 +13,62 @@ var tick = 0;
 // initialize display based on frame buffer
 var display = new Uint16Array(buff(start, size));
 var screen  = new Screen(display);
-serial.init()
+
+
+serial.init(screen, function (chr) {
+  if (chr === 13)
+    return screen.returnOrClear();
+
+  screen.write(String.fromCharCode(chr));
+});
+
 serial.write('> ')
 
-var line = []
-
-while (true) {
-  var y,
-      sig
-  if (sig = poll())
-  if (sig === 4) {
-    screen.write('>')
-    readSerial()
-  } else if (sig === 1) {
-    inb(0x60)
-    screen.write(String(sig))
-  }
-  else screen.write(String(sig))
+function prompt() {
+  screen.newline()
+  screen.write('> ')
 }
 
-function readSerial() {
-  var x = serial.read();
-  if (x > 0) {
-    var c = String.fromCharCode(x)
-    if (c==='\n') {
-      screen.newline()
-      try {
-        var o = eval(line.join(''))
-        serial.write(String(o))
-      } catch (e) {
-        serial.write(e.message)
+prompt();
+
+var sig;
+var line = [];
+
+while (true) {
+  sig = poll();
+
+  if (!sig) {
+    continue;
+  }
+
+  switch(sig) {
+    case 4: //COM1
+      serial.handleInt();
+      break;
+
+    case 1: //keyboard
+      var key = map(inb(0x60));
+
+      if (key === '\n') {
+        line.push('\n> ');
+        serial.write(line.join(''));
+        line.length = 0;
+        screen.returnOrClear();
+        prompt();
+      } else if (key === '\b') {
+        line.pop();
+        screen.backspace();
+      } else {
+        if (key) {
+          line.push(key);
+          screen.writeChar(key);
+        }
       }
-      serial.write('\n> ')
-      line = []
-    } else {
-      line.push(c)
-    }
+
+      key = null;
+      break;
+
+      default: //Unhandled interrupt
+        screen.write(String(sig));
   }
 }

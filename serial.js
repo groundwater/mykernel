@@ -1,41 +1,105 @@
 var PORT = 0x3f8;
+var writeBuffer = [];
+var canWrite = false;
+var canRead = false;
+var readCallback;
+var screen;
 
-function serial_received() {
-  return inb(PORT + 5) & 1;
+function iir() {
+    return inb(0x3FA);
 }
 
-function read_serial() {
-  while (serial_received() == 0);
-
-  return inb(PORT);
+function msr() {
+    return inb(0x3FE);
 }
 
-function is_transmit_empty() {
-  return inb(PORT + 5) & 0x20;
+
+function lsr() {
+  return inb(0x3FD);
 }
 
-function write_serial(a) {
-  while (is_transmit_empty() === 0);
+//Helpful links:
+//  http://www.lammertbies.nl/comm/info/serial-uart.html#FCR
+//  http://flint.cs.yale.edu/cs422/doc/art-of-asm/pdf/CH22.PDF
+//  http://wiki.osdev.org/PIC
+function handleInt() {
+  var register = iir();
+  var hasInterrupt = register & 1;
 
-  outb(PORT,a);
+  switch(register & 0xE) {
+      case 0: //Modem status change
+        msr();
+        break;
+
+      case 2: //Transmitter holding register empty - ready to send
+        canWrite = true;
+        if (writeBuffer.length === 0) {
+          iir();
+        } else {
+          var c = writeBuffer.shift();
+          outb(0x3f8, c);
+        }
+        break;
+
+      case 4: //Received data available - ready to read
+        readCallback(inb(0x3f8));
+        break;
+
+      case 6: //Line status change
+        var status = lsr();
+        if (status & 1 === 1) {
+          readCallback(inb(0x3f8));
+        }
+        break;
+
+      default:
+        break;
+  }
 }
+
 
 module.exports = {
-  init: function() {
+  init: function(scr, cb) {
+    screen = scr;
+    readCallback = cb;
+
+    outb(0x70, inb(0x70) | 0x80);  //disable NMI
+
+    outb(0x20, 0x11); // 00010001b, begin PIC 1 initialization
+    outb(0xA0, 0x11); // 00010001b, begin PIC 2 initialization
+
+    outb(0x21, 0x40); // IRQ 0-7, interrupts 20h-27h
+    outb(0xA1, 0x48); // IRQ 8-15, interrupts 28h-2Fh
+
+    outb(0x21, 0x04);
+    outb(0xA1, 0x02);
+
+    outb(0x21, 0x01);
+    outb(0xA1, 0x01);
+
+    // Mask all PIC interrupts
+    outb(0x21, 0xFF);
+    outb(0xA1, 0xFF);
+
     outb(PORT + 1, 0x00);    // Disable all interrupts
     outb(PORT + 3, 0x80);    // Enable DLAB (set baud rate divisor)
-    outb(PORT + 0, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
+    outb(PORT + 0, 0x01);    // Set divisor to 1 (lo byte) 56K baud
     outb(PORT + 1, 0x00);    //                  (hi byte)
     outb(PORT + 3, 0x03);    // 8 bits, no parity, one stop bit
-    outb(PORT + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
+    outb(PORT + 2, 0x03);    // Enable FIFO, clear them, with 1-byte threshold
     outb(PORT + 4, 0x0B);    // IRQs enabled, RTS/DSR set
-  },
 
-  read: read_serial,
+    outb(PORT + 1, 0x0F);    // Enable all interrupts for IRQ 1 - 16
+  },
 
   write: function(str) {
     for(var i = 0; i < str.length; i++) {
-      write_serial(str.charCodeAt(i));
+      writeBuffer.push(str.charCodeAt(i));
     }
-  }
+
+    if(writeBuffer.length) {
+      outb(0x3f8, writeBuffer.shift());
+    }
+  },
+  handleInt: handleInt
 };
